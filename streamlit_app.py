@@ -55,13 +55,13 @@ _page_icon = LOGO_LOCAL if LOGO_LOCAL else "🏦"
 
 try:
     st.set_page_config(
-        page_title="Plataforma Cambial — Executive",
+        page_title="Plataforma Cambial — FNC",
         page_icon=_page_icon,
         layout="wide",
     )
 except Exception:
     st.set_page_config(
-        page_title="Plataforma Cambial — Executive",
+        page_title="Plataforma Cambial — FNC",
         page_icon="🏦",
         layout="wide",
     )
@@ -1297,7 +1297,7 @@ if df_daily is not None and not df_daily.empty:
 
             include_curr_month = st.toggle(
                 f"Incluir mês corrente ({_PT_MONTHS_FULL.get(curr_m, _PT_MONTHS.get(curr_m, str(curr_m)))})",
-                value=False,
+                value=month_in_progress,   # ✅ só true se o mês estiver incompleto
                 key="include_curr_month_summary",
                 disabled=not is_current_year_in_file,
             )
@@ -1329,7 +1329,7 @@ if df_daily is not None and not df_daily.empty:
                     max_month_with_data = int(dfm["mes_num"].max())
                     cutoff_month = max_month_with_data
 
-                    if is_current_year_in_file and (not include_curr_month):
+                    if is_current_year_in_file and month_in_progress and (not include_curr_month):
                         cutoff_month = min(cutoff_month, curr_m - 1)
 
                     if cutoff_month < 1:
@@ -1428,7 +1428,7 @@ if df_daily is not None and not df_daily.empty:
 </tr>
 """
                         # --- Linha YTD ---
-                        ytd_end_m = int(cutoff_month) if (is_current_year_in_file and (not include_curr_month)) else int(curr_m)
+                        ytd_end_m = int(cutoff_month)
                         df_ytdm = df_month.copy()
                         if is_month_estimated:
                             df_ytdm = _apply_forecast_to_month_row(df_ytdm, df_daily, sel_year, curr_m, asof_in_year)
