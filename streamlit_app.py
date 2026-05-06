@@ -1869,9 +1869,35 @@ with st.container(key="upload_block"):
 
         if st.session_state.raw_report_bytes is not None:
             st.caption("✅ Ficheiro carregado em memória (sessão activa).")
-            if st.button("🗑️ Limpar dados carregados"):
-                st.session_state.raw_report_bytes = None
-                st.session_state.sel_year = None
-                st.session_state.sel_month = None
-                st.session_state.asof_date = None
-                st.rerun()
+
+def _clear_loaded_data():
+        # 1) Remove o cache persistente do CSV (senão ele volta a carregar sozinho no próximo rerun)
+        try:
+            if PERSISTENT_CSV.exists():
+                PERSISTENT_CSV.unlink()
+        except Exception:
+            pass
+
+        # 2) Limpa caches do Streamlit (inclui st.cache_data do load_report)
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+
+        # 3) Apaga keys do estado (inclui keys de widgets)
+        keys_to_delete = [
+            "raw_report_bytes",
+            "sel_year",
+            "sel_month",
+            "asof_date",
+            "pos_scope",
+            "include_curr_month_summary",
+            "include_year_forecast",
+            "detail_day",
+            "detail_day_picker",
+        ]
+        for k in keys_to_delete:
+            if k in st.session_state:
+                del st.session_state[k]
+
+st.button("🗑️ Limpar dados carregados", on_click=_clear_loaded_data)
