@@ -11,6 +11,9 @@ from typing import Optional, List, Dict, Tuple
 from functools import lru_cache
 import urllib.request
 import hmac
+import os
+import json
+import hashlib
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -18,7 +21,100 @@ import altair as alt
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
-PERSISTENT_CSV = DATA_DIR / "report_cache.csv"
+
+# Cache persistente (forte) em subpasta própria
+CACHE_DIR = DATA_DIR / "cache"
+CACHE_DIR.mkdir(exist_ok=True)
+
+# “ativo” = sempre este ficheiro
+PERSISTENT_CSV = CACHE_DIR / "report_cache_active.csv"
+PERSISTENT_META = CACHE_DIR / "report_cache_active.json"
+
+def _sha256_bytes(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+def _atomic_write_bytes(dst: Path, data: bytes) -> bool:
+    """
+    Escreve de forma atômica: grava num .tmp e faz replace().
+    Se falhar, não altera o ficheiro antigo.
+    """
+    try:
+        tmp = dst.with_suffix(dst.suffix + ".tmp")
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.replace(dst)  # atomic (mesmo filesystem)
+        return True
+    except Exception:
+        return False
+
+def _atomic_write_text(dst: Path, text: str) -> bool:
+    try:
+        tmp = dst.with_suffix(dst.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.replace(dst)
+        return True
+    except Exception:
+        return False
+
+def _purge_old_cache_files():
+    """
+    Apaga qualquer ficheiro antigo de cache (exceto o ativo e o meta ativo).
+    """
+    try:
+        for p in CACHE_DIR.glob("*"):
+            if p.resolve() in (PERSISTENT_CSV.resolve(), PERSISTENT_META.resolve()):
+                continue
+            if p.is_file():
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+def _persist_active_csv(new_raw: bytes, filename: str = "uploaded.csv") -> bool:
+    """
+    1) Apaga caches antigos (melhor esforço)
+    2) Grava CSV ativo (atômico)
+    3) Grava meta (atômico)
+    """
+    # 0) limpeza de lixo antigo
+    _purge_old_cache_files()
+
+    # 1) grava CSV ativo
+    ok_csv = _atomic_write_bytes(PERSISTENT_CSV, new_raw)
+    if not ok_csv:
+        return False
+
+    # 2) grava meta (hash + timestamp)
+    meta = {
+        "filename": filename,
+        "sha256": _sha256_bytes(new_raw),
+        "updated_at": pd.Timestamp.now().isoformat(),
+    }
+    ok_meta = _atomic_write_text(PERSISTENT_META, json.dumps(meta, ensure_ascii=False, indent=2))
+    if not ok_meta:
+        # CSV ficou gravado, mas meta não — ainda assim consideramos OK,
+        # porque no arranque o app lê o CSV ativo.
+        return True
+
+    return True
+
+def _read_persisted_csv() -> Optional[bytes]:
+    """
+    Lê SEMPRE o CSV ativo (se existir).
+    """
+    try:
+        if PERSISTENT_CSV.exists() and PERSISTENT_CSV.is_file():
+            return PERSISTENT_CSV.read_bytes()
+    except Exception:
+        return None
+    return None
 
 # =============================================================================
 # LOGO (CGD)
@@ -1050,9 +1146,10 @@ with c_title:
 # =============================================================================
 raw = st.session_state.raw_report_bytes
 
-if raw is None and PERSISTENT_CSV.exists():
-    raw = PERSISTENT_CSV.read_bytes()
-    st.session_state.raw_report_bytes = raw
+if raw is None:
+    raw = _read_persisted_csv()
+    if raw is not None:
+        st.session_state.raw_report_bytes = raw
 df_daily = None
 _load_err = None
 
@@ -1863,18 +1960,45 @@ with st.container(key="upload_block"):
             new_raw = fallback_path.read_bytes()
 
         if new_raw is not None:
+            # 1) limpa o cache do parser para evitar DataFrame “antigo”
+            try:
+                st.cache_data.clear()
+            except Exception:
+                pass
+
+            # 2) mantém o CSV na sessão imediatamente (funciona na hora)
             st.session_state.raw_report_bytes = new_raw
-            PERSISTENT_CSV.write_bytes(new_raw)
-            st.rerun()
+
+            # 3) persistência forte: overwrite atômico + purge de caches antigos
+            src_name = upl.name if upl is not None else ("Report.csv" if use_fallback else "uploaded.csv")
+            ok_persist = _persist_active_csv(new_raw, filename=src_name)
+
+            if ok_persist:
+                st.rerun()
+            else:
+                st.error("Falha ao persistir o CSV em disco. Nesta sessão funciona, mas ao reabrir pode voltar ao antigo.")
+
 
         if st.session_state.raw_report_bytes is not None:
             st.caption("✅ Ficheiro carregado em memória (sessão activa).")
 
 def _clear_loaded_data():
-        # 1) Remove o cache persistente do CSV (senão ele volta a carregar sozinho no próximo rerun)
+        # 1) Remove CSV ativo + meta + qualquer lixo no diretório de cache
         try:
-            if PERSISTENT_CSV.exists():
-                PERSISTENT_CSV.unlink()
+            for p in [PERSISTENT_CSV, PERSISTENT_META]:
+                if p.exists():
+                    p.unlink()
+        except Exception:
+            pass
+
+        try:
+            # apaga qualquer outro ficheiro antigo que exista no cache_dir
+            for p in CACHE_DIR.glob("*"):
+                if p.is_file():
+                    try:
+                        p.unlink()
+                    except Exception:
+                        pass
         except Exception:
             pass
 
